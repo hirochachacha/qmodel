@@ -11,38 +11,29 @@ import (
 type templateProxyModel struct {
 	*core.QIdentityProxyModel
 
-	Header []*template.Template
+	Header []string
 	Data   []*template.Template
 
 	buf bytes.Buffer
 }
 
-func NewTemplateProxyModel(src core.QAbstractItemModel_ITF, columnHeader []string, columnData []string) core.QAbstractItemModel_ITF {
-	tmpl := template.New("main")
-	tmpl.Funcs(template.FuncMap{"col": func(item interface{}, col int) (interface{}, error) {
-		switch item := item.(type) {
-		case *core.QIdentityProxyModel: // header
-			return toValue(item.HeaderDataDefault(col, core.Qt__Horizontal, int(core.Qt__DisplayRole))), nil
-		case *core.QModelIndex: // data
-			return toValue(item.Model().Data(item.Sibling(item.Row(), col), int(core.Qt__DisplayRole))), nil
-		default:
-			return nil, fmt.Errorf("col: unsupported type")
-		}
-	}})
-
-	header := make([]*template.Template, len(columnHeader))
-	for i, s := range columnHeader {
-		header[i] = template.Must(tmpl.New(fmt.Sprint("header[%d]", i)).Parse(s))
+func NewTemplateProxyModel(src core.QAbstractItemModel_ITF, columnHeader []string, columnDataFormat []string, funcs template.FuncMap) core.QAbstractItemModel_ITF {
+	fs := defaultFuncs()
+	for k, v := range funcs {
+		fs[k] = v
 	}
 
-	data := make([]*template.Template, len(columnData))
-	for i, s := range columnData {
+	tmpl := template.New("main")
+	tmpl.Funcs(fs)
+
+	data := make([]*template.Template, len(columnDataFormat))
+	for i, s := range columnDataFormat {
 		data[i] = template.Must(tmpl.New(fmt.Sprint("data[%d]", i)).Parse(s))
 	}
 
 	m := &templateProxyModel{
 		QIdentityProxyModel: core.NewQIdentityProxyModel(nil),
-		Header:              header,
+		Header:              columnHeader,
 		Data:                data,
 	}
 
@@ -56,6 +47,9 @@ func NewTemplateProxyModel(src core.QAbstractItemModel_ITF, columnHeader []strin
 }
 
 func (m *templateProxyModel) columnCount(parent *core.QModelIndex) int {
+	if len(m.Header) < len(m.Data) {
+		return len(m.Data)
+	}
 	return len(m.Header)
 }
 
@@ -68,12 +62,7 @@ func (m *templateProxyModel) headerData(section int, orientation core.Qt__Orient
 		if !(0 <= section && section < len(m.Header)) {
 			return core.NewQVariant()
 		}
-
-		m.buf.Reset()
-
-		m.Header[section].Execute(&m.buf, m.QIdentityProxyModel)
-
-		return core.NewQVariant14(m.buf.String())
+		return core.NewQVariant14(m.Header[section])
 	case core.Qt__Vertical:
 		return core.NewQVariant7(section)
 	}
@@ -96,4 +85,36 @@ func (m *templateProxyModel) data(index *core.QModelIndex, role int) *core.QVari
 	m.Data[col].Execute(&m.buf, m.MapToSource(index))
 
 	return core.NewQVariant14(m.buf.String())
+}
+
+func defaultFuncs() template.FuncMap {
+	var cols map[string]int
+
+	return template.FuncMap{
+		"data": func(index *core.QModelIndex, col interface{}) (interface{}, error) {
+			switch col := col.(type) {
+			case int:
+				return toValue(index.Sibling(index.Row(), col).Data(int(core.Qt__DisplayRole))), nil
+			case string:
+				if cols == nil {
+					m := index.Model()
+					ncols := m.ColumnCount(index.Parent())
+					cols = make(map[string]int, ncols)
+					for i := 0; i < ncols; i++ {
+						cols[m.HeaderData(i, core.Qt__Horizontal, int(core.Qt__DisplayRole)).ToString()] = i
+					}
+				}
+				if i, ok := cols[col]; ok {
+					return toValue(index.Sibling(index.Row(), i).Data(int(core.Qt__DisplayRole))), nil
+				}
+			}
+			return nil, fmt.Errorf("data: unsupported type")
+		},
+		"row": func(index *core.QModelIndex) int {
+			return index.Row()
+		},
+		"col": func(index *core.QModelIndex) int {
+			return index.Column()
+		},
+	}
 }
